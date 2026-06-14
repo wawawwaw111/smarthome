@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0f172a">
+<link rel="manifest" href="manifest.json">
+<title>智能家居管家</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.5.0/mqtt.min.js"></script>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:system-ui,sans-serif;background:#0f172a;color:#f1f5f9;min-height:100vh}
+  .header{background:linear-gradient(135deg,#1e3a5f,#0f172a);border-bottom:1px solid #334155;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+  .header h1{font-size:1.1rem;display:flex;align-items:center;gap:6px}
+  .badge{font-size:.65rem;padding:4px 10px;border-radius:12px;font-weight:600}
+  .badge.on{background:#064e3b;color:#6ee7b7}
+  .badge.off{background:#450a0a;color:#fca5a5}
+  .container{max-width:780px;margin:0 auto;padding:14px}
+  .section h2{font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;color:#94a3b8;margin:14px 0 6px;padding-left:4px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .card{background:#1e293b;border:1px solid #334155;border-radius:14px;padding:14px;transition:.2s}
+  .sensor .val{font-size:1.8rem;font-weight:800;text-align:center}
+  .sensor .lbl{font-size:.7rem;color:#94a3b8;text-align:center;margin-top:4px}
+  .sensor .st{font-size:.7rem;text-align:center;margin-top:4px}
+  .card.warn{border-color:#f59e0b;background:#42200611}
+  .card.bad{border-color:#ef4444;background:#450a0a11}
+  .actuator{display:flex;align-items:center;justify-content:space-between}
+  .actuator .info{display:flex;align-items:center;gap:10px}
+  .actuator .info .icon{font-size:1.4rem}
+  .actuator .info .name{font-weight:600;font-size:.85rem}
+  .actuator .info .state{font-size:.65rem;color:#94a3b8}
+  .switch{position:relative;width:46px;height:24px;flex-shrink:0}
+  .switch input{display:none}
+  .switch .sl{position:absolute;inset:0;background:#334155;border-radius:24px;cursor:pointer;transition:.25s}
+  .switch .sl::before{content:'';position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.25s}
+  .switch input:checked+.sl{background:#3b82f6}
+  .switch input:checked+.sl::before{transform:translateX(22px)}
+  .btn{padding:7px 14px;border:none;border-radius:8px;font-size:.75rem;font-weight:600;cursor:pointer;color:#fff}
+  .btn-red{background:#ef4444}
+  .alarm-panel{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
+  .alarm-dot{width:12px;height:12px;border-radius:50%;background:#334155;transition:.3s}
+  .alarm-dot.armed{background:#22c55e;box-shadow:0 0 10px #22c55e}
+  .alarm-dot.trig{background:#ef4444;box-shadow:0 0 16px #ef4444;animation:blink .5s infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+  .log{max-height:140px;overflow-y:auto;font-size:.7rem}
+  .log .ev{padding:5px 10px;border-left:3px solid #334155;margin:2px 0;color:#94a3b8}
+  .log .ev.w{border-color:#f59e0b}.log .ev.e{border-color:#ef4444}
+  .log .ev .t{color:#64748b;margin-right:6px;font-family:monospace}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1e293b;border:1px solid #334155;padding:10px 20px;border-radius:20px;font-weight:600;z-index:1000;animation:up .3s}
+  @keyframes up{from{opacity:0;transform:translateX(-50%) translateY(16px)}}
+  @media(max-width:480px){.grid2{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🏠 智能家居管家</h1>
+  <span class="badge off" id="stBadge">⚫ 离线</span>
+</div>
+
+<div class="container">
+  <div class="section"><h2>📡 传感器</h2>
+    <div class="grid2">
+      <div class="card sensor" id="tc">
+        <div>🌡️</div><div class="val" id="tv">--</div>
+        <div class="lbl">温度 °C</div><div class="st" id="ts"></div>
+      </div>
+      <div class="card sensor" id="hc">
+        <div>💧</div><div class="val" id="hv">--</div>
+        <div class="lbl">湿度 %</div>
+      </div>
+      <div class="card sensor" id="sc">
+        <div>🌱</div><div class="val" id="sv">--</div>
+        <div class="lbl">土壤湿度 %</div>
+      </div>
+      <div class="card sensor" id="pc">
+        <div>👤</div><div class="val" id="pv" style="font-size:1rem">--</div>
+        <div class="lbl">人体检测</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section"><h2>🎮 执行器</h2>
+    <div class="grid2" id="acts"></div>
+  </div>
+
+  <div class="section"><h2>🛡️ 系统</h2>
+    <div class="card alarm-panel">
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="alarm-dot" id="adot"></div>
+        <span id="atxt">连接中...</span>
+      </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+        <label style="font-size:.75rem;color:#94a3b8">
+          布防 <input type="checkbox" id="alarmToggle" checked onchange="ctl('alarmActive',this.checked)">
+        </label>
+        <label style="font-size:.75rem;color:#94a3b8">
+          自动 <input type="checkbox" id="autoToggle" checked onchange="ctl('autoMode',this.checked)">
+        </label>
+        <button class="btn btn-red" onclick="ctl('buzzer',1)" style="font-size:.7rem">🚨</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="section"><h2>📋 事件日志</h2>
+    <div class="card log" id="log">
+      <div class="ev"><span class="t">--:--:--</span>正在连接...</div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ==================== MQTT 直连 broker.emqx.io ====================
+const BROKER = 'wss://broker.emqx.io:8084/mqtt';
+const TOPIC_STATUS = 'smarthome/esp32_002/status';
+const TOPIC_CONTROL = 'smarthome/esp32_002/control';
+let mqttClient = null;
+
+const acts=[
+  {id:'led',name:'LED警示灯',icon:'🔴'},
+  {id:'relay',name:'继电器',icon:'⚡'},
+  {id:'lock',name:'电磁锁',icon:'🔒'},
+  {id:'buzzer',name:'喇叭',icon:'🔊'}
+];
+
+document.getElementById('acts').innerHTML=acts.map(a=>
+  `<div class="card actuator">
+    <div class="info"><span class="icon">${a.icon}</span><div>
+    <div class="name">${a.name}</div>
+    <div class="state" id="${a.id}State">--</div></div></div>
+    <label class="switch">
+      <input type="checkbox" id="${a.id}Toggle" onchange="ctl('${a.id}',this.checked)">
+      <span class="sl"></span>
+    </label>
+  </div>`
+).join('');
+
+// 连接 MQTT
+function connect(){
+  log('连接服务器...');
+  mqttClient = mqtt.connect(BROKER, {
+    clientId: 'web_' + Math.random().toString(16).slice(2,10),
+    clean: true,
+    connectTimeout: 5000,
+    reconnectPeriod: 5000
+  });
+
+  mqttClient.on('connect', () => {
+    document.getElementById('stBadge').innerHTML='🟢 在线';
+    document.getElementById('stBadge').className='badge on';
+    mqttClient.subscribe(TOPIC_STATUS, {qos:0});
+    log('✅ 已连接到智能家居系统');
+    toast('✅ 已连接');
+  });
+
+  mqttClient.on('message', (topic, message) => {
+    try {
+      const data = JSON.parse(message.toString());
+      // 解析华为云格式: {"services":[{"properties":{...}}]}
+      let props = data;
+      if (data.services) {
+        data.services.forEach(svc => {
+          if (svc.properties) Object.assign(props, svc.properties);
+        });
+      }
+      upd(props);
+    } catch(e) {}
+  });
+
+  mqttClient.on('close', () => {
+    document.getElementById('stBadge').innerHTML='🔴 离线';
+    document.getElementById('stBadge').className='badge off';
+    log('⚠️ 连接断开，自动重连中...');
+  });
+
+  mqttClient.on('error', (e) => {
+    log('❌ 连接错误: ' + e.message);
+  });
+}
+
+function upd(d){
+  if(d.temperature!==undefined){
+    document.getElementById('tv').textContent=d.temperature.toFixed(1);
+    document.getElementById('ts').textContent=d.temperature>30?'⚠️ 偏高':'✅ 正常';
+    document.getElementById('tc').classList.toggle('warn',d.temperature>30);
+    document.getElementById('tc').classList.toggle('bad',d.temperature>35);
+  }
+  if(d.humidity!==undefined)document.getElementById('hv').textContent=d.humidity.toFixed(1);
+  if(d.soil_moisture!==undefined){
+    document.getElementById('sv').textContent=d.soil_moisture;
+    document.getElementById('sc').classList.toggle('warn',d.soil_moisture<30);
+    document.getElementById('sc').classList.toggle('bad',d.soil_moisture<15);
+  }
+  if(d.motion!==undefined){
+    document.getElementById('pv').textContent=d.motion?'🚨 有人!':'无人';
+    document.getElementById('pv').style.color=d.motion?'#ef4444':'#94a3b8';
+    document.getElementById('pc').classList.toggle('bad',!!d.motion);
+  }
+  acts.forEach(a=>{
+    if(d[a.id]!==undefined&&d[a.id]!==null){
+      const v = typeof d[a.id]==='boolean' ? d[a.id] : !!d[a.id];
+      document.getElementById(a.id+'Toggle').checked=v;
+      document.getElementById(a.id+'State').textContent=v?
+        (a.id==='lock'?'已开锁':a.id==='relay'?'吸合':'开启'):
+        (a.id==='lock'?'已锁定':a.id==='relay'?'断开':'关闭');
+    }
+  });
+  if(d.alarmActive!==undefined){
+    const aa = !!d.alarmActive;
+    document.getElementById('alarmToggle').checked=aa;
+    const ad=document.getElementById('adot');
+    ad.className='alarm-dot'+(d.motion&&aa?' trig':aa?' armed':'');
+    document.getElementById('atxt').textContent=d.motion&&aa?'🚨 警报触发!':aa?'🛡️ 布防中':'⚠️ 未布防';
+  }
+  if(d.autoMode!==undefined)document.getElementById('autoToggle').checked=!!d.autoMode;
+}
+
+function ctl(dev,val){
+  if(!mqttClient||!mqttClient.connected) return toast('❌ 离线');
+  const cmd = {};
+  cmd[dev] = val;
+  mqttClient.publish(TOPIC_CONTROL, JSON.stringify(cmd), {qos:0});
+  toast('📤 '+dev+'='+(val?'ON':'OFF'));
+  log('命令: '+dev+'='+(val?'ON':'OFF'));
+}
+
+function log(text){
+  const el=document.getElementById('log');
+  const t=new Date().toTimeString().slice(0,8);
+  const div=document.createElement('div');
+  div.className='ev';
+  div.innerHTML=`<span class="t">${t}</span>${text}`;
+  el.insertBefore(div,el.firstChild);
+  while(el.children.length>50)el.removeChild(el.lastChild);
+}
+
+function toast(msg){
+  let e=document.querySelector('.toast');
+  if(!e){e=document.createElement('div');e.className='toast';document.body.appendChild(e)}
+  e.textContent=msg;clearTimeout(e._t);
+  e._t=setTimeout(()=>{if(e)e.remove()},2500);
+}
+
+// 启动
+connect();
+</script>
+</body>
+</html>
