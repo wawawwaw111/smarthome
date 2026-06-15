@@ -70,7 +70,8 @@ const char* wxUid = "UID_Z5g0tVn2awK3ARQoHwTVU6NqkBjT";
 // ==================== 全局状态变量 ====================
 WiFiClient tcpClient;        // 华为云 MQTT
 WiFiClient pubClient;        // 公网 MQTT (broker.emqx.io)
-WiFiClient bmClient;         // 巴法云 TCP (小爱同学)
+WiFiClient bemfaWifi;        // 巴法云 MQTT
+PubSubClient bemfaMqtt(bemfaWifi);
 
 // 公网 MQTT 配置（无需密码，全球可访问）
 const char* pubHost = "broker.emqx.io";
@@ -80,23 +81,19 @@ const char* pubTopicControl = "smarthome/esp32_002/control";
 bool pubConnected = false;
 uint16_t pubPid = 1;
 
-// 巴法云配置（小爱同学语音控制）
+// 巴法云 MQTT 配置（小爱同学语音控制）
 const char* bmUid = "bca72863b8b1f2811641a64085c45fa7";
-const char* bmHost = "tcp.bemfa.com";
-const int   bmPort = 8344;
+const char* bmServer = "bemfa.com";
+const int   bmPort = 9501;
+// 巴法云5个主题
+const char* T_LED    = "YzxiyyBvk002";
+const char* T_BUZZER = "nG9QPACuQ002";
+const char* T_TEMP   = "UNp3tB8R0002";
+const char* T_HUM    = "Gnl7EopOB002";
+const char* T_SOIL   = "jfxLyHahw002";
+bool bmConnected = false;
 // 前置声明
 void setLED(bool); void setBuzzer(bool); void setRelay(bool); void setRelay2(bool); void setLock(bool);
-// 巴法云主题 → ESP32 执行器映射
-struct BmTopic { const char* topic; const char* name; void (*setFunc)(bool); };
-BmTopic bmTopics[] = {
-  {"AtJ7tFy4v002",  "LED灯",    setLED},
-  {"PLor7Mg27002",  "蜂鸣器",   setBuzzer},
-  {"uguAMfy5P001",  "继电器1",  setRelay},
-  {"zV0ydtrUe001",  "继电器2",  setRelay2},
-};
-const int bmTopicCount = 4;
-bool bmConnected = false;
-unsigned long lastBmHeartbeat = 0;
 
 // 传感器数据
 float temperature   = 0.0;
@@ -461,96 +458,47 @@ void pubMqttLoop() {
   }
 }
 
-// ==================== 巴法云 TCP（小爱同学语音控制）====================
-bool bmConnect() {
-  bmClient.setTimeout(5);
-  if (!bmClient.connect(bmHost, bmPort, 5000)) {  // 5秒超时
-    Serial.println("[巴法云] TCP连接失败(超时/不可达)");
-    return false;
-  }
-  Serial.println("[巴法云] ✅ 已连接");
-  // 订阅执行器（接收小爱命令）
-  for (int i = 0; i < bmTopicCount; i++) {
-    String sub = "cmd=1&uid=" + String(bmUid) + "&topic=" + bmTopics[i].topic + "\r\n";
-    bmClient.print(sub);
-    delay(100);
-    while (bmClient.available()) { bmClient.read(); }  // 清响应
-    Serial.printf("[巴法云] 订阅 %s\n", bmTopics[i].topic);
-  }
-  // 订阅传感器（关联设备，小爱才能查询）
-  const char* sensTopics[] = {"irz0khlBG004", "jdau9itWM004", "YCPSdbxdv004", "GQLePol7g004"};
-  for (int i = 0; i < 4; i++) {
-    String sub = "cmd=1&uid=" + String(bmUid) + "&topic=" + sensTopics[i] + "\r\n";
-    bmClient.print(sub);
-    delay(100);
-    while (bmClient.available()) { bmClient.read(); }
-    Serial.printf("[巴法云] 订阅 %s\n", sensTopics[i]);
-  }
-  lastBmHeartbeat = millis();
-  return true;
+// ==================== 巴法云 MQTT（小爱同学语音控制，PubSubClient）====================
+
+// MQTT 回调：小爱下发的命令
+void bemfaCallback(char* topic, byte* payload, unsigned int length) {
+  String msg = "";
+  for (int i = 0; i < length; i++) msg += (char)payload[i];
+  msg.trim();
+  msg.toLowerCase();
+  Serial.printf("[巴法MQTT] ← %s → %s\n", topic, msg.c_str());
+
+  bool state = (msg == "on" || msg == "1");
+  String t(topic);
+  if (t == T_LED)    setLED(state);
+  else if (t == T_BUZZER) setBuzzer(state);
+  else { Serial.printf("[巴法MQTT] 未知主题: %s\n", topic); return; }
+  Serial.printf("[语音] 小爱控制 %s → %s\n", topic, state ? "ON" : "OFF");
+  reportProperties();
 }
 
-void bmPublish(const char* topic, const char* msg) {
+void connectBemfa() {
+  bemfaMqtt.setServer(bmServer, bmPort);
+  bemfaMqtt.setCallback(bemfaCallback);
+  if (bemfaMqtt.connect(bmUid)) {
+    Serial.println("[巴法MQTT] ✅ 已连接");
+    bemfaMqtt.subscribe(T_LED);
+    bemfaMqtt.subscribe(T_BUZZER);
+    bemfaMqtt.subscribe(T_TEMP);
+    bemfaMqtt.subscribe(T_HUM);
+    bemfaMqtt.subscribe(T_SOIL);
+    Serial.println("[巴法MQTT] 已订阅5个主题");
+    bmConnected = true;
+  } else {
+    Serial.println("[巴法MQTT] ❌ 连接失败");
+    bmConnected = false;
+  }
+}
+
+void bemfaReport(const char* topic, const char* msg) {
   if (!bmConnected) return;
-  String pub = "cmd=2&uid=" + String(bmUid) + "&topic=" + topic + "&msg=" + msg + "\r\n";
-  bmClient.print(pub);
-  bmClient.flush();
-}
-
-// 传感器专用上报（cmd=3 写设备数值，小爱可查询）
-void bmPublishSensor(const char* topic, const char* msg) {
-  if (!bmConnected) return;
-  String pub = "cmd=3&uid=" + String(bmUid) + "&topic=" + topic + "&msg=" + msg + "\r\n";
-  bmClient.print(pub);
-  bmClient.flush();  // 立即发送
-  Serial.printf("[巴法云] 上报 %s=%s\n", topic, msg);
-}
-
-void bmLoop() {
-  if (!bmClient.connected()) return;
-
-  // 心跳（每30秒，巴法云协议不可带topic）
-  if (millis() - lastBmHeartbeat > 30000) {
-    bmClient.print("cmd=0&uid=" + String(bmUid) + "\r\n");
-    lastBmHeartbeat = millis();
-    Serial.println("[巴法云] 心跳");
-  }
-
-  // 读取服务器消息
-  String line = "";
-  while (bmClient.available()) {
-    char c = bmClient.read();
-    if (c == '\n' || c == '\r') {
-      if (line.length() > 0) {
-        Serial.printf("[巴法云] ← %s\n", line.c_str());
-        // 解析格式: cmd=2&uid=XXX&topic=AtJ7tFy4v002&msg=on
-        if (line.startsWith("cmd=2&")) {
-          int tPos = line.indexOf("&topic=");
-          int mPos = line.indexOf("&msg=");
-          if (tPos > 0 && mPos > tPos) {
-            String topic = line.substring(tPos + 7, mPos);
-            String msg = line.substring(mPos + 5);
-            // 去掉末尾可能的多余参数
-            int amp = msg.indexOf('&');
-            if (amp > 0) msg = msg.substring(0, amp);
-            msg.trim();
-            bool state = (msg == "on" || msg == "1");
-            for (int i = 0; i < bmTopicCount; i++) {
-              if (topic == bmTopics[i].topic) {
-                bmTopics[i].setFunc(state);
-                Serial.printf("[语音] 小爱控制 %s → %s\n", bmTopics[i].name, state ? "ON" : "OFF");
-                break;
-              }
-            }
-            reportProperties();
-          }
-        }
-        line = "";
-      }
-    } else {
-      line += c;
-    }
-  }
+  bemfaMqtt.publish(topic, msg, true);  // retained 小爱可查询
+  Serial.printf("[巴法MQTT] 上报 %s=%s\n", topic, msg);
 }
 
 /**
@@ -911,7 +859,7 @@ void setRelay2(bool state) {
   if (relay2State == state) return;
   relay2State = state;
   digitalWrite(RELAY2_PIN, state ? HIGH : LOW);
-  Serial.printf("[执行] 继电器2 → %s\n", state ? "ON" : "OFF");
+  Serial.printf("[执行] 继电器2(土壤) → %s\n", state ? "ON" : "OFF");
 }
 
 void setLock(bool state) {
@@ -919,9 +867,16 @@ void setLock(bool state) {
 }
 
 void setBuzzer(bool state) {
-  if (buzzerState == state) return;  // 状态没变，跳过
+  if (buzzerState == state) return;
   buzzerState = state;
-  digitalWrite(BUZZER_PIN, state ? HIGH : LOW);
+  if (state) {
+    ledcSetup(0, 1000, 8);
+    ledcAttachPin(BUZZER_PIN, 0);
+    ledcWrite(0, 128);
+  } else {
+    ledcDetachPin(BUZZER_PIN);
+    digitalWrite(BUZZER_PIN, LOW);
+  }
   Serial.printf("[执行] 喇叭 → %s\n", state ? "ON" : "OFF");
 }
 
@@ -975,18 +930,16 @@ void processAutomation() {
       char msg[64];
       snprintf(msg, sizeof(msg), "当前湿度: %d%% (阈值: %d%%)", soilMoisture, (int)SOIL_THRESHOLD);
       sendPush("🌱 土壤干燥警告", msg);
+      setLED(true);
+      setRelay2(true);
     }
-    setLED(true);
-    relay2State = true;
-    digitalWrite(RELAY2_PIN, HIGH);
   } else {
     if (soilWarned) {
       Serial.println("[联动] ✅ 土壤湿度恢复正常");
       soilWarned = false;
+      if (!alarmTriggered) setLED(false);
+      setRelay2(false);
     }
-    if (!alarmTriggered) setLED(false);
-    relay2State = false;
-    digitalWrite(RELAY2_PIN, LOW);
   }
 
   // ===== 规则3: 温度 > 30°C =====
@@ -997,19 +950,13 @@ void processAutomation() {
       char msg[64];
       snprintf(msg, sizeof(msg), "当前温度: %.1f°C (阈值: %.0f°C)", temperature, TEMP_THRESHOLD);
       if (alarmActive) {
-        // 布防ON: 仅推送
         sendPush("🔥 温度过高", msg);
         Serial.printf("[联动] 🔥 温度过高(%.1f°C) 布防模式,仅推送\n", temperature);
       } else {
-        // 布防OFF: 喇叭蜂鸣 + 推送
         sendPush("🔥 温度过高警告", msg);
+        setBuzzer(true);  // 仅触发一次，后续手动可覆盖
         Serial.printf("[联动] 🔥 温度过高(%.1f°C) 未布防,蜂鸣告警\n", temperature);
       }
-    }
-    if (!alarmActive) {
-      // 布防OFF时蜂鸣器间歇鸣叫
-      bool beep = (millis() / 500) % 2 == 0;
-      setBuzzer(beep);
     }
   } else {
     if (tempHigh) {
@@ -1108,20 +1055,13 @@ void reportProperties() {
     Serial.println("[上报] 属性已上报(公网)");
     delay(50);
   }
-  // 同时上报到巴法云（供小爱同学控制+查询）
+  // 同时上报到巴法云 MQTT（小爱查询/控制）
   if (bmConnected) {
-    bmPublish("AtJ7tFy4v002",  ledState    ? "on" : "off");
-    bmPublish("PLor7Mg27002",  buzzerState ? "on" : "off");
-    bmPublish("uguAMfy5P001",  relayState  ? "on" : "off");
-    bmPublish("zV0ydtrUe001",  relay2State ? "on" : "off");
-    // 传感器数值上报（统一用cmd=2）
-    char buf[16];
-    // 传感器用"数值"msg上报（小爱查询用）
-    snprintf(buf, sizeof(buf), "%d", (int)temperature); bmPublishSensor("irz0khlBG004", buf);
-    snprintf(buf, sizeof(buf), "%d", (int)humidity);    bmPublishSensor("jdau9itWM004", buf);
-    snprintf(buf, sizeof(buf), "%d", soilMoisture);     bmPublishSensor("YCPSdbxdv004", buf);
-    snprintf(buf, sizeof(buf), "%d", alarmActive ? 1 : 0);
-    bmPublishSensor("GQLePol7g004", buf);
+    bemfaReport(T_LED,    ledState    ? "on" : "off");
+    bemfaReport(T_BUZZER, buzzerState ? "on" : "off");
+    bemfaReport(T_TEMP,   temperature > 30  ? "on" : "off");
+    bemfaReport(T_HUM,    humidity    < 40  ? "on" : "off");
+    bemfaReport(T_SOIL,   soilMoisture < 30 ? "on" : "off");
   }
 }
 
@@ -1234,9 +1174,8 @@ void setup() {
     }
 
     // --- 巴法云连接（小爱同学） ---
-    bmConnected = bmConnect();
+    connectBemfa();
     if (bmConnected) {
-      delay(300);  // 等订阅指令完成
       // 读取传感器（失败重试一次）
       if (!readDHT11()) { delay(100); readDHT11(); }
       soilMoisture = readSoilMoisture();
@@ -1341,13 +1280,12 @@ void loop() {
     }
   }
 
-  // ==================== 1.6 巴法云（小爱同学） ====================
-  if (bmConnected) {
-    bmLoop();
-    if (!bmClient.connected()) {
-      bmConnected = bmConnect();
-    }
+  // ==================== 1.6 巴法云 MQTT（小爱同学） ====================
+  if (!bemfaMqtt.connected()) {
+    bmConnected = false;
+    connectBemfa();
   }
+  if (bmConnected) bemfaMqtt.loop();
 
   if (!tcpClient.connected() || !mqttConnected) {
     Serial.println("[MQTT] ⚠️ 连接断开，5秒后重连...");
