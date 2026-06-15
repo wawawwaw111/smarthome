@@ -821,21 +821,12 @@ bool readPIR() {
  * 返回: true=检测到按下
  */
 bool readButton() {
-  bool pressed = false;
-  int reading = digitalRead(BUTTON_PIN);
-
-  if (reading != lastButtonState) {
-    lastDebounceTime = millis();
+  static unsigned long lastPress = 0;
+  if (digitalRead(BUTTON_PIN) == HIGH && millis() - lastPress > 500) {
+    lastPress = millis();
+    return true;
   }
-
-  if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
-    if (reading == HIGH && lastButtonState == LOW) {
-      pressed = true;
-    }
-  }
-
-  lastButtonState = reading;
-  return pressed;
+  return false;
 }
 
 // ==================== 执行器控制 ====================
@@ -1185,8 +1176,8 @@ void setup() {
     }
   }
 
-  // 默认开启报警系统
-  alarmActive = true;
+  // 默认关闭报警系统，需要时手动开启
+  alarmActive = false;
 
   Serial.println("\n[系统] ✅ 初始化完成，进入主循环\n");
   Serial.println("═══════════════════════════════════════════\n");
