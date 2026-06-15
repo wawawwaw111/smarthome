@@ -1,12 +1,12 @@
 {
   "name": "智能家居管家",
   "short_name": "SmartHome",
-  "description": "ESP32 智能物联网家居控制系统 - 2026课程设计",
+  "description": "ESP32 IoT 智能家居控制",
   "start_url": "https://wawawwaw111.github.io/smarthome/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#0b1120",
-  "theme_color": "#0b1120",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
   "lang": "zh-CN",
   "icons": [
     {
