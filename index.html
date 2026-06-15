@@ -200,6 +200,8 @@ function upd(d){
   }
   acts.forEach(a=>{
     if(d[a.id]!==undefined&&d[a.id]!==null){
+      // 3秒内手动改过的跳过自动刷新
+      if(manualTime[a.id] && Date.now()-manualTime[a.id] < 3000) return;
       const v = typeof d[a.id]==='boolean' ? d[a.id] : !!d[a.id];
       document.getElementById(a.id+'Toggle').checked=v;
       document.getElementById(a.id+'State').textContent=v?
@@ -217,11 +219,13 @@ function upd(d){
   if(d.autoMode!==undefined)document.getElementById('autoToggle').checked=!!d.autoMode;
 }
 
+let manualTime = {};
 function ctl(dev,val){
   if(!mqttClient||!mqttClient.connected) return toast('❌ 离线');
   const cmd = {};
   cmd[dev] = val;
   mqttClient.publish(TOPIC_CONTROL, JSON.stringify(cmd), {qos:0});
+  manualTime[dev] = Date.now(); // 记录手动操作时间
   toast('📤 '+dev+'='+(val?'ON':'OFF'));
   log('命令: '+dev+'='+(val?'ON':'OFF'));
 }
