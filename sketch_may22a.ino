@@ -483,6 +483,9 @@ void bemfaCallback(char* topic, byte* payload, unsigned int length) {
   }
 
   bool state = (msg == "on" || msg == "1");
+  // 过滤retained消息回环
+  if ((t == T_LED && state == ledState) || (t == T_BUZZER && state == buzzerState)) return;
+
   if (t == T_LED)    setLED(state);
   else if (t == T_BUZZER) setBuzzer(state);
   else { Serial.printf("[巴法MQTT] 未知主题: %s\n", topic); return; }
@@ -510,7 +513,7 @@ void connectBemfa() {
 
 void bemfaReport(const char* topic, const char* msg) {
   if (!bmConnected) return;
-  bemfaMqtt.publish(topic, msg, true);  // retained 小爱可查询
+  bemfaMqtt.publish(topic, msg);  // 不用retained，避免回声
   Serial.printf("[巴法MQTT] 上报 %s=%s\n", topic, msg);
 }
 
