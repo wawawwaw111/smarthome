@@ -22,8 +22,7 @@ WiFiServer httpServer(80);  // HTTP 服务，浏览器直接连 ESP32
 
 // ==================== WiFi 配置 ====================
 const char* ssid = "wuhu";
-const char* password = "as
-dfghjkl";
+const char* password = "asdfghjkl";
 
 // ==================== 华为云 IoT MQTT 配置 ====================
 const char* mqttHost = "b6498afe8e.st1.iotda-device.cn-north-4.myhuaweicloud.com";
@@ -63,7 +62,7 @@ String topicMsgUp;      // 消息上报
 #define HUM_THRESHOLD       70.0   // 空气湿度阈值(%)，高于则推送
 #define ALARM_DURATION     5000    // 报警持续时间(ms)
 #define REPORT_INTERVAL    10000   // 属性上报间隔(ms) 改慢
-#define PING_INTERVAL      60000   // MQTT心跳间隔(ms)
+#define PING_INTERVAL      25000   // MQTT心跳(保活60s的一半)
 #define SENSOR_INTERVAL    3000    // 传感器读取间隔(ms)
 
 // WxPusher 推送配置（免费无限制）
@@ -570,7 +569,7 @@ void handleIncomingMessage(const char* topic, uint8_t* payload, int payloadLen) 
       }
       if (!props["relay2"].isNull()) {
         relay2State = props["relay2"].as<bool>();
-        digitalWrite(RELAY2_PIN, relay2State ? HIGH : LOW);
+        digitalWrite(RELAY2_PIN, relay2State ? LOW : HIGH);  // GPIO0反相
         Serial.printf("[执行] 继电器2 → %s\n", relay2State ? "ON" : "OFF");
       }
       if (!props["lock"].isNull()) {
@@ -859,7 +858,7 @@ void setRelay(bool state) {
 void setRelay2(bool state) {
   if (relay2State == state) return;
   relay2State = state;
-  digitalWrite(RELAY2_PIN, state ? HIGH : LOW);
+  digitalWrite(RELAY2_PIN, state ? LOW : HIGH);  // GPIO0有上拉，反相驱动
   Serial.printf("[执行] 继电器2(土壤) → %s\n", state ? "ON" : "OFF");
 }
 
@@ -1023,9 +1022,11 @@ void reportProperties() {
   String jsonStr;
   serializeJson(doc, jsonStr);
 
-  mqttPublish(topicReport.c_str(), jsonStr.c_str());
-  Serial.println("[上报] 属性已上报(华为云)");
-  delay(50);
+  if (mqttConnected) {
+    mqttPublish(topicReport.c_str(), jsonStr.c_str());
+    Serial.println("[上报] 属性已上报(华为云)");
+    delay(50);
+  }
   // 同时上报到公网 MQTT（供网页仪表盘）
   if (pubConnected) {
     pubMqttPublish(pubTopicStatus, jsonStr.c_str());
@@ -1064,7 +1065,7 @@ void setup() {
   // 初始状态: 全部关闭
   digitalWrite(LED_PIN, LOW);
   digitalWrite(RELAY_PIN, LOW);
-  digitalWrite(RELAY2_PIN, LOW);
+  digitalWrite(RELAY2_PIN, HIGH);  // GPIO0反相, 初始OFF
   digitalWrite(BUZZER_PIN, LOW);
 
   // --- Wi-Fi 连接（带超时保护，防止看门狗复位）---
@@ -1266,6 +1267,11 @@ void loop() {
   if (autoMode && mqttConnected) {
     mqttLoop();
   }
+  static bool lastAuto = true;
+  if (autoMode != lastAuto) {
+    lastAuto = autoMode;
+    Serial.printf("\n===== 🔄 已切换：%s =====\n\n", autoMode ? "自动模式" : "手动模式");
+  }
 
   // ==================== 1.5 公网 MQTT ====================
   if (pubConnected) {
@@ -1284,9 +1290,9 @@ void loop() {
   if (bmConnected) bemfaMqtt.loop();
 
   if (autoMode && (!tcpClient.connected() || !mqttConnected)) {
-    Serial.println("[MQTT] ⚠️ 连接断开，5秒后重连...");
+    Serial.println("[MQTT] ⚠️ 连接断开，8秒后重连...");
     tcpClient.stop();
-    delay(5000);
+    delay(8000);
     mqttConnected = mqttConnect();
     if (mqttConnected) {
       mqttSubscribe(topicCmd.c_str(), 1);
