@@ -17,6 +17,8 @@
 #include <WiFi.h>
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
+#include <Preferences.h>
+Preferences prefs;
 
 WiFiServer httpServer(80);  // HTTP 服务，浏览器直接连 ESP32
 
@@ -1163,9 +1165,11 @@ void setup() {
     }
   }
 
-  // 默认自动模式，温度/土壤交给华为云，PIR+按键本地
-  alarmActive = true;
-  autoMode = true;
+  // 恢复上次模式（断电记忆）
+  prefs.begin("smarthome", false);
+  autoMode = prefs.getBool("autoMode", true);
+  alarmActive = prefs.getBool("alarm", true);
+  Serial.printf("[系统] 恢复模式: %s\n", autoMode ? "自动" : "手动");
 
   Serial.println("\n[系统] ✅ 初始化完成，进入主循环\n");
   Serial.println("═══════════════════════════════════════════\n");
@@ -1270,6 +1274,8 @@ void loop() {
   static bool lastAuto = true;
   if (autoMode != lastAuto) {
     lastAuto = autoMode;
+    prefs.putBool("autoMode", autoMode);
+    prefs.putBool("alarm", alarmActive);
     Serial.printf("\n===== 🔄 已切换：%s =====\n\n", autoMode ? "自动模式" : "手动模式");
   }
 
