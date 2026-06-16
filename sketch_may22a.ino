@@ -22,7 +22,8 @@ WiFiServer httpServer(80);  // HTTP 服务，浏览器直接连 ESP32
 
 // ==================== WiFi 配置 ====================
 const char* ssid = "wuhu";
-const char* password = "asdfghjkl";
+const char* password = "as
+dfghjkl";
 
 // ==================== 华为云 IoT MQTT 配置 ====================
 const char* mqttHost = "b6498afe8e.st1.iotda-device.cn-north-4.myhuaweicloud.com";
@@ -1244,7 +1245,25 @@ void loop() {
       ESP.restart();
     }
   }
-  if (mqttConnected) {
+  // ==================== 1.4 华为云 MQTT（自动模式连，手动模式断）====================
+  static bool lastAutoMode = true;
+  if (autoMode != lastAutoMode) {
+    lastAutoMode = autoMode;
+    if (autoMode) {
+      Serial.println("[MQTT] 🔄 自动模式开启，连接华为云...");
+      mqttConnected = mqttConnect();
+      if (mqttConnected) {
+        mqttSubscribe(topicCmd.c_str(),1); mqttSubscribe(topicSet.c_str(),1);
+        mqttSubscribe(topicGet.c_str(),1); mqttSubscribe(topicMsgDown.c_str(),1);
+        reportProperties(); lastReportTime=millis(); lastPingTime=millis();
+      }
+    } else {
+      Serial.println("[MQTT] 🔌 手动模式，断开华为云");
+      tcpClient.stop();
+      mqttConnected = false;
+    }
+  }
+  if (autoMode && mqttConnected) {
     mqttLoop();
   }
 
@@ -1264,9 +1283,9 @@ void loop() {
   }
   if (bmConnected) bemfaMqtt.loop();
 
-  if (!tcpClient.connected() || !mqttConnected) {
+  if (autoMode && (!tcpClient.connected() || !mqttConnected)) {
     Serial.println("[MQTT] ⚠️ 连接断开，5秒后重连...");
-    tcpClient.stop();  // 清理旧连接
+    tcpClient.stop();
     delay(5000);
     mqttConnected = mqttConnect();
     if (mqttConnected) {
