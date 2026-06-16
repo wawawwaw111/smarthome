@@ -57,11 +57,13 @@ String topicMsgUp;      // 消息上报
 #define BUZZER_PIN    27   // 功放喇叭 → D4 (GPIO27)
 
 // ==================== 阈值配置 ====================
-#define TEMP_THRESHOLD      30.0   // 温度阈值(°C)，超过则打开继电器
-#define SOIL_THRESHOLD      30.0   // 土壤湿度阈值(%)，低于则LED警告
+#define TEMP_THRESHOLD      30.0   // 温度阈值(°C)
+#define SOIL_THRESHOLD      30.0   // 土壤湿度阈值(%)，低于则告警
+#define HUM_THRESHOLD       70.0   // 空气湿度阈值(%)，高于则推送
 #define ALARM_DURATION     5000    // 报警持续时间(ms)
-#define REPORT_INTERVAL    5000    // 属性上报间隔(ms)
-#define PING_INTERVAL      30000   // MQTT心跳间隔(ms)
+#define REPORT_INTERVAL    10000   // 属性上报间隔(ms) 改慢
+#define PING_INTERVAL      60000   // MQTT心跳间隔(ms)
+#define SENSOR_INTERVAL    3000    // 传感器读取间隔(ms)
 
 // WxPusher 推送配置（免费无限制）
 const char* wxAppToken = "AT_PalYfm2J6QpIh07KyJ70PF0WtpKro6Bf";
@@ -442,14 +444,16 @@ void pubMqttLoop() {
       char* js=(char*)malloc(plen+1);
       memcpy(js,data+pos,plen); js[plen]=0;
       Serial.printf("[公网MQTT] 收到: %s → %s\n",topic,js);
+      if (autoMode) { Serial.println("[公网MQTT] ⛔ 自动模式，忽略"); free(js); free(data); return; }
       JsonDocument doc;
       if(!deserializeJson(doc,js)){
-        if(doc["led"].is<bool>()) setLED(doc["led"].as<bool>());
-        if(doc["relay"].is<bool>()) setRelay(doc["relay"].as<bool>());
-        if(doc["lock"].is<bool>()) setLock(doc["lock"].as<bool>());
-        if(doc["buzzer"].is<bool>()) setBuzzer(doc["buzzer"].as<bool>());
-        if(doc["autoMode"].is<bool>()) autoMode=doc["autoMode"].as<bool>();
-        if(doc["alarmActive"].is<bool>()) alarmActive=doc["alarmActive"].as<bool>();
+        if(!doc["led"].isNull())    setLED(doc["led"].as<bool>());
+        if(!doc["relay"].isNull())  setRelay(doc["relay"].as<bool>());
+        if(!doc["relay2"].isNull()) setRelay2(doc["relay2"].as<bool>());
+        if(!doc["lock"].isNull())   setLock(doc["lock"].as<bool>());
+        if(!doc["buzzer"].isNull()) setBuzzer(doc["buzzer"].as<bool>());
+        if(!doc["autoMode"].isNull())  autoMode=doc["autoMode"].as<bool>();
+        if(!doc["alarmActive"].isNull()) alarmActive=doc["alarmActive"].as<bool>();
         reportProperties();
       }
       free(js);
@@ -468,8 +472,13 @@ void bemfaCallback(char* topic, byte* payload, unsigned int length) {
   msg.toLowerCase();
   Serial.printf("[巴法MQTT] ← %s → %s\n", topic, msg.c_str());
 
-  bool state = (msg == "on" || msg == "1");
+  // 自动模式只拦执行器控制，不拦传感器查询
   String t(topic);
+  if (autoMode && (t == T_LED || t == T_BUZZER)) {
+    Serial.println("[巴法] ⛔ 自动模式，忽略语音控制"); return;
+  }
+
+  bool state = (msg == "on" || msg == "1");
   if (t == T_LED)    setLED(state);
   else if (t == T_BUZZER) setBuzzer(state);
   else { Serial.printf("[巴法MQTT] 未知主题: %s\n", topic); return; }
@@ -541,6 +550,7 @@ void handleIncomingMessage(const char* topic, uint8_t* payload, int payloadLen) 
 
   // ========== 方式1: 属性设置 ==========
   if (strstr(topic, "/sys/properties/set/") != NULL) {
+    if (autoMode) { Serial.println("[命令] ⛔ 自动模式，忽略手动命令"); free(jsonStr); return; }
     JsonObject services = doc["services"][0];
     JsonObject props = services["properties"];
     if (!props.isNull()) {
@@ -587,6 +597,7 @@ void handleIncomingMessage(const char* topic, uint8_t* payload, int payloadLen) 
 
   // ========== 方式2: 命令下发 ==========
   if (strstr(topic, "/sys/commands/") != NULL) {
+    if (autoMode) { Serial.println("[命令] ⛔ 自动模式，忽略手动命令"); free(jsonStr); return; }
     const char* cmdName = doc["command_name"];
     JsonObject paras = doc["paras"];
 
@@ -604,6 +615,9 @@ void handleIncomingMessage(const char* topic, uint8_t* payload, int payloadLen) 
       }
       else if (strcmp(cmdName, "controlBuzzer") == 0) {
         setBuzzer(paras["buzzer"].as<bool>() || paras["Buzzer"].as<bool>());
+      }
+      else if (strcmp(cmdName, "controlRelay2") == 0 || strcmp(cmdName, "controlrealy2") == 0) {
+        setRelay2(paras["relay2"].as<bool>() || paras["Relay2"].as<bool>());
       }
       else if (strcmp(cmdName, "setAutoMode") == 0) {
         autoMode = paras["autoMode"].as<bool>() || paras["AutoMode"].as<bool>();
@@ -912,50 +926,26 @@ void processAutomation() {
     setBuzzer(false);
   }
 
-  // ===== 规则2: 土壤 < 30% → LED常亮 + 继电器2吸合 + 推送 =====
-  static bool soilWarned = false;
-  if (soilMoisture < SOIL_THRESHOLD) {
-    if (!soilWarned) {
-      Serial.printf("[联动] ⚠️ 土壤干燥(%d%%)  LED+继电器2开启\n", soilMoisture);
-      soilWarned = true;
-      char msg[64];
-      snprintf(msg, sizeof(msg), "当前湿度: %d%% (阈值: %d%%)", soilMoisture, (int)SOIL_THRESHOLD);
-      sendPush("🌱 土壤干燥警告", msg);
-      setLED(true);
-      setRelay2(true);
-    }
-  } else {
-    if (soilWarned) {
-      Serial.println("[联动] ✅ 土壤湿度恢复正常");
-      soilWarned = false;
-      if (!alarmTriggered) setLED(false);
-      setRelay2(false);
-    }
+  // ===== 温度/土壤/湿度推送（云规则无法发WxPusher，保留本地）=====
+  static bool tempPushed=false, soilPushed=false, humPushed=false;
+  if (temperature > TEMP_THRESHOLD && !tempPushed) {
+    tempPushed=true;
+    char m[64]; snprintf(m,sizeof(m),"当前温度: %.1f°C",temperature);
+    sendPush("🔥 温度过高", m);
   }
-
-  // ===== 规则3: 温度 > 30°C =====
-  static bool tempHigh = false;
-  if (temperature > TEMP_THRESHOLD) {
-    if (!tempHigh) {
-      tempHigh = true;
-      char msg[64];
-      snprintf(msg, sizeof(msg), "当前温度: %.1f°C (阈值: %.0f°C)", temperature, TEMP_THRESHOLD);
-      if (alarmActive) {
-        sendPush("🔥 温度过高", msg);
-        Serial.printf("[联动] 🔥 温度过高(%.1f°C) 布防模式,仅推送\n", temperature);
-      } else {
-        sendPush("🔥 温度过高警告", msg);
-        setBuzzer(true);  // 仅触发一次，后续手动可覆盖
-        Serial.printf("[联动] 🔥 温度过高(%.1f°C) 未布防,蜂鸣告警\n", temperature);
-      }
-    }
-  } else {
-    if (tempHigh) {
-      Serial.printf("[联动] ✅ 温度恢复正常(%.1f°C)\n", temperature);
-      tempHigh = false;
-      if (!alarmTriggered) setBuzzer(false);
-    }
+  if (temperature <= TEMP_THRESHOLD) tempPushed=false;
+  if (soilMoisture < SOIL_THRESHOLD && !soilPushed) {
+    soilPushed=true;
+    char m[64]; snprintf(m,sizeof(m),"土壤湿度: %d%%",soilMoisture);
+    sendPush("🌱 土壤干燥警告", m);
   }
+  if (soilMoisture >= SOIL_THRESHOLD) soilPushed=false;
+  if (humidity > HUM_THRESHOLD && !humPushed) {
+    humPushed=true;
+    char m[64]; snprintf(m,sizeof(m),"空气湿度: %.0f%%",humidity);
+    sendPush("💧 湿度过高", m);
+  }
+  if (humidity <= HUM_THRESHOLD) humPushed=false;
 
   // ===== 报警时 LED 闪烁 =====
   if (alarmTriggered) {
@@ -1072,7 +1062,7 @@ void setup() {
   pinMode(RELAY2_PIN, OUTPUT);
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(PIR_PIN, INPUT);
-  pinMode(BUTTON_PIN, INPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLDOWN);
   pinMode(SOIL_PIN, INPUT);
 
   // 初始状态: 全部关闭
@@ -1176,8 +1166,9 @@ void setup() {
     }
   }
 
-  // 默认关闭报警系统，需要时手动开启
+  // PIR报警本地处理，温度/土壤交给华为云规则引擎
   alarmActive = false;
+  autoMode = true;
 
   Serial.println("\n[系统] ✅ 初始化完成，进入主循环\n");
   Serial.println("═══════════════════════════════════════════\n");
@@ -1305,7 +1296,7 @@ void loop() {
 
   // ==================== 4. 读取传感器 ====================
   static unsigned long lastSensorRead = 0;
-  if (millis() - lastSensorRead > 2000) {  // 每2秒读取一次
+  if (millis() - lastSensorRead > SENSOR_INTERVAL) {
     lastSensorRead = millis();
 
     // DHT11 温湿度
@@ -1338,7 +1329,5 @@ void loop() {
     lastReportTime = millis();
   }
 
-  // ==================== 8. 看门狗（可选） ====================
-  // yield() 给 ESP32 后台任务（WiFi等）运行时间
-  delay(10);
+  delay(20);
 }
