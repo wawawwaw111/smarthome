@@ -218,9 +218,12 @@ function upd(d){
   }
   if(d.autoMode!==undefined){
     document.getElementById('autoToggle').checked=!!d.autoMode;
-    // 自动模式：锁定执行器开关，仅可查看
+    // 自动模式：所有执行器锁定只读
     acts.forEach(a=>{
-      document.getElementById(a.id+'Toggle').disabled=!!d.autoMode;
+      const t=document.getElementById(a.id+'Toggle');
+      t.disabled=!!d.autoMode;
+      t.parentElement.style.opacity=d.autoMode?'0.4':'1';
+      t.parentElement.style.pointerEvents=d.autoMode?'none':'auto';
     });
   }
 }
