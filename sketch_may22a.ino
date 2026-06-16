@@ -444,9 +444,11 @@ void pubMqttLoop() {
       char* js=(char*)malloc(plen+1);
       memcpy(js,data+pos,plen); js[plen]=0;
       Serial.printf("[公网MQTT] 收到: %s → %s\n",topic,js);
-      if (autoMode) { Serial.println("[公网MQTT] ⛔ 自动模式，忽略"); free(js); free(data); return; }
       JsonDocument doc;
       if(!deserializeJson(doc,js)){
+        // 自动模式下只放行autoMode/alarmActive开关，其余封锁
+        bool isModeCmd = (!doc["autoMode"].isNull() || !doc["alarmActive"].isNull());
+        if (autoMode && !isModeCmd) { Serial.println("[公网MQTT] ⛔ 自动模式，忽略"); free(js); free(data); return; }
         if(!doc["led"].isNull())    setLED(doc["led"].as<bool>());
         if(!doc["relay"].isNull())  setRelay(doc["relay"].as<bool>());
         if(!doc["relay2"].isNull()) setRelay2(doc["relay2"].as<bool>());
@@ -727,13 +729,6 @@ void mqttLoop() {
         }
 
         int payloadLen = rl - pos;
-        Serial.printf("[MQTT] DEBUG rl=%d topicLen=%d pos=%d payloadLen=%d\n", rl, topicLen, pos, payloadLen);
-        // 打印 payload 前 20 字节的十六进制
-        Serial.printf("[MQTT] HEX: ");
-        for (int i = 0; i < payloadLen && i < 20; i++) {
-          Serial.printf("%02X ", data[pos + i]);
-        }
-        Serial.println();
         handleIncomingMessage(topic, data + pos, payloadLen);
         break;
       }
@@ -1166,8 +1161,8 @@ void setup() {
     }
   }
 
-  // PIR报警本地处理，温度/土壤交给华为云规则引擎
-  alarmActive = false;
+  // 默认自动模式，温度/土壤交给华为云，PIR+按键本地
+  alarmActive = true;
   autoMode = true;
 
   Serial.println("\n[系统] ✅ 初始化完成，进入主循环\n");

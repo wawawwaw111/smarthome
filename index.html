@@ -216,7 +216,13 @@ function upd(d){
     ad.className='alarm-dot'+(d.motion&&aa?' trig':aa?' armed':'');
     document.getElementById('atxt').textContent=d.motion&&aa?'🚨 警报触发!':aa?'🛡️ 布防中':'⚠️ 未布防';
   }
-  if(d.autoMode!==undefined)document.getElementById('autoToggle').checked=!!d.autoMode;
+  if(d.autoMode!==undefined){
+    document.getElementById('autoToggle').checked=!!d.autoMode;
+    // 自动模式：锁定执行器开关，仅可查看
+    acts.forEach(a=>{
+      document.getElementById(a.id+'Toggle').disabled=!!d.autoMode;
+    });
+  }
 }
 
 let manualTime = {};
